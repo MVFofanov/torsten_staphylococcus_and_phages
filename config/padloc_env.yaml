@@ -1,0 +1,13 @@
+# padloc_env.yaml
+name: padloc_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - infernal=1.1.5
+  - padloc=2.0.0
+  - pip
+  - pip:
+      - crispr-detect

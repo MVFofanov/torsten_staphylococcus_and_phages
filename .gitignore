@@ -1,0 +1,14 @@
+# .gitignore (at repo root)
+
+# Ignore everything by default
+/*
+
+# But keep this .gitignore itself
+!.gitignore
+!README.md
+
+# And keep the scripts directory and everything inside it
+!/scripts/
+!/scripts/**
+!/config/
+#!/config/**
