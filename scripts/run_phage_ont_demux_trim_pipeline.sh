@@ -160,118 +160,233 @@ is_fastq_gz () {
 # done < "$PHAGE_MAP"
 # echo "[DONE] Per-phage concatenation (trimmed)."
 
-# =========================
-# STEP 3.5: Porechop-ABI (adapter/artefact discovery + trimming) per-phage
-# =========================
-echo "[RUN ] porechop_abi per-phage → $PORECHOP_DIR (logs per phage)"
+# # =========================
+# # STEP 3.5: Porechop-ABI per-barcode (NOT per-phage); then concat per phage
+# # =========================
+# echo "[RUN ] porechop_abi per-barcode → $PORECHOP_DIR (logs per barcode)"
 
-# use the env that has porechop_abi installed
-source "$ONT_ENV_ACTIVATE"; conda activate "$ONT_ENV_NAME"
+# # --- env with porechop_abi ---
+# source "$ONT_ENV_ACTIVATE"; conda activate "$ONT_ENV_NAME"
 
-# make loop robust if no files match
+# mkdir -p "$PORECHOP_DIR"
+
+# # Build barcode → phage map from PHAGE_MAP (TSV: phage<TAB>barcode01,barcode37,...)
+# # Normalizes barcodes to 'barcodeNN' (two digits, lower-case).
+# declare -A B2P  # barcode -> phage
+# declare -A PH_SEEN
+
+# while IFS=$'\t' read -r phage barcs; do
+#   [[ -z "${phage:-}" || -z "${barcs:-}" ]] && continue
+#   [[ "${phage}" == "phage" || "${phage:0:1}" == "#" ]] && continue
+#   IFS=',' read -ra arr <<< "$barcs"
+#   for bc in "${arr[@]}"; do
+#     bc="$(echo "$bc" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+#     # accept forms like bc01, BC01, barcode01 → normalize to barcodeNN
+#     if [[ "$bc" =~ ^barcode[0-9]{2}$ ]]; then
+#       norm="$bc"
+#     elif [[ "$bc" =~ ^bc([0-9]{2})$ ]]; then
+#       norm="barcode${BASH_REMATCH[1]}"
+#     elif [[ "$bc" =~ ^([0-9]{1,2})$ ]]; then
+#       norm=$(printf "barcode%02d" "${BASH_REMATCH[1]}")
+#     else
+#       echo "[WARN] Unrecognized barcode token in PHAGE_MAP: '$bc' for $phage" >&2
+#       continue
+#     fi
+#     B2P["$norm"]="$phage"
+#   done
+# done < "$PHAGE_MAP"
+
+# # Helper: parse a porechop_abi log → 1 line of TSV
+# _parse_porechop_log() {
+#   local log="$1" phage="$2" barcode="$3"
+#   local start_line end_line split_line start_n end_n start_bp end_bp splits tot_reads bc_counts
+
+#   start_line="$(grep -E 'reads had adapters trimmed from their start ' "$log" | head -n1 || true)"
+#   end_line="$(  grep -E 'reads had adapters trimmed from their end '   "$log" | head -n1 || true)"
+
+#   # counts trimmed at start/end
+#   start_n="$(printf '%s\n' "$start_line" | awk '{gsub(",","",$1); print $1+0}')"
+#   end_n="$(  printf '%s\n' "$end_line"   | awk '{gsub(",","",$1); print $1+0}')"
+
+#   # bp removed (inside parentheses)
+#   start_bp="$(printf '%s\n' "$start_line" | sed -E 's/.*\(([0-9,]+) bp removed\).*/\1/;t;d' | tr -d ,)"
+#   end_bp="$(  printf '%s\n' "$end_line"   | sed -E 's/.*\(([0-9,]+) bp removed\).*/\1/;t;d' | tr -d ,)"
+
+#   # exact split line: "116 / 344,434 reads were split based on middle adapters"
+#   split_line="$(grep -E '^[[:space:]]*[0-9,]+ / [0-9,]+ reads were split based on middle adapters' "$log" | head -n1 || true)"
+#   if [[ -n "$split_line" ]]; then
+#     splits="$(printf '%s\n' "$split_line" | sed -E 's/^[[:space:]]*([0-9,]+) \/ .*/\1/;t;d' | tr -d ,)"
+#     tot_reads="$(printf '%s\n' "$split_line" | sed -E 's/^[[:space:]]*[0-9,]+ \/ ([0-9,]+) .*/\1/;t;d' | tr -d ,)"
+#   else
+#     splits=0
+#     # fallback: try total from the start-trim line if present
+#     if [[ -n "$start_line" ]]; then
+#       tot_reads="$(printf '%s\n' "$start_line" | sed -E 's/.* \/ ([0-9,]+) reads .*/\1/;t;d' | tr -d ,)"
+#     else
+#       tot_reads="NA"
+#     fi
+#   fi
+
+#   # barcode tallies seen inside the log (BC01, BC01_rev etc.)
+#   bc_counts="$(grep -Eo 'BC[0-9]{2}(_rev)?' "$log" 2>/dev/null \
+#       | sort | uniq -c \
+#       | awk '{printf("%s:%s;", $2,$1)}' \
+#       | sed 's/;$//' )"
+#   [[ -z "$bc_counts" ]] && bc_counts="NA"
+
+#   echo -e "${phage}\t${barcode}\t${tot_reads}\t${start_n:-0}\t${start_bp:-0}\t${end_n:-0}\t${end_bp:-0}\t${splits:-0}\t${bc_counts}"
+# }
+
+# # per-run barcode summary (one row per processed barcode FASTQ)
+# RUN_BC_SUM="$PORECHOP_DIR/_per_barcode_summary.tsv"
+# echo -e "phage\tbarcode\ttotal_reads\tstart_trimmed\tstart_bp_removed\tend_trimmed\tend_bp_removed\tsplit_reads\tbarcode_counts" > "$RUN_BC_SUM"
+
+# # Find demuxed per-barcode FASTQs (already dorado-trimmed)
 shopt -s nullglob
+mapfile -t BC_FASTQS < <(
+  find "$DEMUX_DIR" -maxdepth 1 -type f \( \
+      -name '*_barcode[0-9][0-9].fastq'      -o \
+      -name '*_barcode[0-9][0-9].fastq.gz'   -o \
+      -name '*barcode[0-9][0-9].fastq'       -o \
+      -name '*barcode[0-9][0-9].fastq.gz' \
+    \) | sort
+)
+if (( ${#BC_FASTQS[@]} == 0 )); then
+  echo "[WARN] No per-barcode FASTQs found in $DEMUX_DIR. Did you run demux? File pattern expects '*barcodeNN.fastq[.gz]'"
+fi
 
-found_any=0
-for INPHAGE in "$PER_PHAGE_RAW"/M*.trimmed.fastq.gz; do
-  found_any=1
-  [[ -f "$INPHAGE" ]] || continue
+# PORECHOP_VERBOSITY="${PORECHOP_VERBOSITY:-1}"
 
-  # derive phage name, e.g. M1 from M1.trimmed.fastq.gz
-  bn="$(basename "$INPHAGE")"
-  ph="${bn%.trimmed.fastq.gz}"
-
-  if [[ ! -s "$INPHAGE" ]]; then
-    echo "[WARN] Input is missing or empty: $(basename "$INPHAGE")"
+for INBC in "${BC_FASTQS[@]}"; do
+  # derive 'barcodeNN' token from filename
+  if [[ "$(basename "$INBC")" =~ (barcode[0-9]{2}) ]]; then
+    bc="${BASH_REMATCH[1],,}"  # lower-case
+  else
+    echo "[WARN] Skip (cannot extract barcodeNN): $(basename "$INBC")"
     continue
   fi
 
-  ph_outdir="$PORECHOP_DIR/$ph"
-  mkdir -p "$ph_outdir"
+#   # derive 'barcodeNN' token from filename -> bc (already done above)
 
-  OUT_FASTQ="$ph_outdir/${ph}.porechop.fastq.gz"
-  LOG="$ph_outdir/porechop_abi.log"
+#   # --- nounset-safe lookup in B2P ---
+  ph="${B2P[$bc]-}"   # empty if missing
+  if [[ -z "$ph" ]]; then
+    echo "[WARN] $bc has no mapping in $PHAGE_MAP; skipping."
+    continue
+  fi
+  PH_SEEN["$ph"]=1
 
-  if [[ -s "$OUT_FASTQ" ]]; then
-    echo "[SKIP] porechop_abi exists for $ph: $OUT_FASTQ"
+#   ph_bc_dir="$PORECHOP_DIR/$ph/barcodes"
+#   mkdir -p "$ph_bc_dir"
+
+#   OUT_FASTQ="$ph_bc_dir/${ph}.${bc}.porechop.fastq.gz"
+#   LOG="$ph_bc_dir/${ph}.${bc}.porechop.log"
+
+#   if [[ -s "$OUT_FASTQ" ]]; then
+#     echo "[SKIP] porechop_abi exists: $(basename "$OUT_FASTQ")"
+#   else
+#     echo "[RUN ] porechop_abi ${ph}/${bc}"
+#     porechop_abi \
+#       -i "$INBC" \
+#       -o "$OUT_FASTQ" \
+#       --format fastq.gz \
+#       -t "$THREADS" \
+#       -v "$PORECHOP_VERBOSITY" \
+#       --min_split_read_size 2000 \
+#       >"$LOG" 2>&1 \
+#       || { echo "[WARN] porechop_abi failed for ${ph}/${bc} (see $LOG)"; continue; }
+
+#     # sanity check output
+#     if ! is_fastq_gz "$OUT_FASTQ"; then
+#       echo "[WARN] porechop_abi output failed FASTQ check: $OUT_FASTQ"
+#     fi
+#   fi
+
+#   # per-barcode summary (with phage column)
+#   SUM_BC="${OUT_FASTQ%.fastq.gz}.summary.tsv"
+#   echo -e "phage\tbarcode\ttotal_reads\tstart_trimmed\tstart_bp_removed\tend_trimmed\tend_bp_removed\tsplit_reads\tbarcode_counts" > "$SUM_BC"
+#   _parse_porechop_log "$LOG" "$ph" "$bc" >> "$SUM_BC"
+
+#   # append to run-level barcode summary
+#   tail -n1 "$SUM_BC" >> "$RUN_BC_SUM"
+# done
+
+# Concat the *porechop* per-barcode outputs per phage; build per-phage roll-up
+for ph in "${!PH_SEEN[@]}"; do
+  ph_dir="$PORECHOP_DIR/$ph"
+  ph_cat="$ph_dir/${ph}.porechop.fastq.gz"
+  mkdir -p "$ph_dir"
+
+  # gather porechopped barcodes for this phage
+  mapfile -t PH_BARCODE_FASTQS < <(find "$ph_dir/barcodes" -maxdepth 1 -type f -name "${ph}.barcode*.porechop.fastq.gz" | sort)
+  if (( ${#PH_BARCODE_FASTQS[@]} == 0 )); then
+    echo "[WARN] No porechopped barcodes to concat for $ph"
     continue
   fi
 
-  # quieter logs
-  PORECHOP_VERBOSITY="${PORECHOP_VERBOSITY:-1}"
-
-  echo "[RUN ] porechop_abi $ph"
-  porechop_abi \
-    -i "$INPHAGE" \
-    -o "$OUT_FASTQ" \
-    --format fastq.gz \
-    -t "$THREADS" \
-    -v "$PORECHOP_VERBOSITY" \
-    --min_split_read_size 2000 \
-    >"$LOG" 2>&1 || { echo "[WARN] porechop_abi failed for $ph (see $LOG)"; continue; }
-
-  # verify gz integrity & FASTQ structure (uses your is_fastq_gz helper)
-  if ! is_fastq_gz "$OUT_FASTQ"; then
-    echo "[WARN] porechop_abi output failed FASTQ check for $ph: $OUT_FASTQ (continuing)"
+  if [[ -s "$ph_cat" ]]; then
+    echo "[SKIP] phage concat exists: $ph_cat"
+  else
+    echo "[RUN ] Concat porechop outputs → ${ph_cat}"
+    { for f in "${PH_BARCODE_FASTQS[@]}"; do pigz -dc "$f"; done; } | $COMPRESS > "${ph_cat}.partial" \
+      && mv "${ph_cat}.partial" "$ph_cat"
+    if ! is_fastq_gz "$ph_cat"; then
+      echo "[WARN] Concat FASTQ check failed for $ph: $ph_cat"
+    fi
   fi
 
-  # --- concise stats -> $ph_outdir/porechop_abi.summary.tsv and a global _summary.tsv ---
-  SUM="$ph_outdir/porechop_abi.summary.tsv"
-  {
-    # extract totals like: "16,494 / 344,434 reads had adapters trimmed from their start (153,974 bp removed)"
-    tot_reads="$(grep -Eo ' / [0-9,]+ reads had adapters trimmed from their start' "$LOG" | head -n1 | awk '{gsub(",","",$3); print $2}' | tr -d ' /')"
-    start_line="$(grep -E 'reads had adapters trimmed from their start ' "$LOG" | head -n1)"
-    end_line="$(grep -E 'reads had adapters trimmed from their end ' "$LOG"   | head -n1)"
-
-    start_n="$(printf '%s\n' "$start_line" | awk '{gsub(",","",$1); print $1}')"
-    start_bp="$(printf  '%s\n' "$start_line" | sed -E 's/.*\(([0-9,]+) bp removed\).*/\1/' | tr -d ,)"
-    end_n="$(printf   '%s\n' "$end_line"   | awk '{gsub(",","",$1); print $1}')"
-    end_bp="$(printf  '%s\n' "$end_line"   | sed -E 's/.*\(([0-9,]+) bp removed\).*/\1/' | tr -d ,)"
-
-    # crude estimate of split events = lines showing a detected middle adapter (those “read coords:” examples)
-    splits="$(grep -c 'read coords:' "$LOG" || true)"
-
-    # barcode tallies seen in the log (e.g. BC01, BC01_rev, etc.)
-    # format as counts like "BC01:123;BC01_rev:45"
-    bc_counts="$(grep -Eo 'BC[0-9]{2}(_rev)?' "$LOG" \
-        | sort | uniq -c \
-        | awk '{printf("%s:%s;", $2,$1)}' \
-        | sed 's/;$//')"
-
-    # header + row (one row file per phage)
-    echo -e "phage\ttotal_reads\tstart_trimmed\tstart_bp_removed\tend_trimmed\tend_bp_removed\tsplit_events\tbarcode_counts"
-    echo -e "${ph}\t${tot_reads:-NA}\t${start_n:-0}\t${start_bp:-0}\t${end_n:-0}\t${end_bp:-0}\t${splits:-0}\t${bc_counts:-NA}"
-  } > "$SUM"
-
-  # also append to a run-level summary
-  GLOBAL_SUM="$PORECHOP_DIR/_summary.tsv"
-  if [[ ! -s "$GLOBAL_SUM" ]]; then
-    head -n1 "$SUM" > "$GLOBAL_SUM"
-  fi
-  tail -n1 "$SUM" >> "$GLOBAL_SUM"
-
+  # phage roll-up summary by summing per-barcode summaries
+  PH_BC_SUMS=( "$ph_dir"/barcodes/*.summary.tsv )
+  PH_SUM="$ph_dir/porechop_abi.summary.tsv"
+  awk -F'\t' -v ph="$ph" '
+    BEGIN{ OFS="\t";
+           print "phage\ttotal_reads\tstart_trimmed\tstart_bp_removed\tend_trimmed\tend_bp_removed\tsplit_reads\tbarcode_counts" }
+    FNR==1 && NR>1 { next }  # skip headers after first file
+    NR>1 {
+      # cols: 1=phage 2=barcode 3=total_reads 4=start_n 5=start_bp 6=end_n 7=end_bp 8=split 9=bc_counts
+      tr[$1]+=($3=="NA"||$3==""?0:$3)
+      st[$1]+=($4==""?0:$4)
+      sb[$1]+=($5==""?0:$5)
+      et[$1]+=($6==""?0:$6)
+      eb[$1]+=($7==""?0:$7)
+      sp[$1]+=($8==""?0:$8)
+      if ($9!="NA" && $9!="") { bc[$1]=(bc[$1]!=""?bc[$1]";":"")$9 }
+    }
+    END{
+      # if all per-barcode totals were NA, print NA; else the numeric sum
+      tot = (tr[ph]>0?tr[ph]:"NA")
+      print ph, tot, st[ph]+0, sb[ph]+0, et[ph]+0, eb[ph]+0, sp[ph]+0, (bc[ph]!=""?bc[ph]:"NA")
+    }' "${PH_BC_SUMS[@]}" > "$PH_SUM"
 done
-shopt -u nullglob
 
-echo "[DONE] porechop_abi."
-
+# also build a per-phage run-level table (one line per phage)
+RUN_PH_SUM="$PORECHOP_DIR/_per_phage_summary.tsv"
+echo -e "phage\ttotal_reads\tstart_trimmed\tstart_bp_removed\tend_trimmed\tend_bp_removed\tsplit_reads\tbarcode_counts" > "$RUN_PH_SUM"
+for ph in "${!PH_SEEN[@]}"; do
+  if [[ -s "$PORECHOP_DIR/$ph/porechop_abi.summary.tsv" ]]; then
+    tail -n1 "$PORECHOP_DIR/$ph/porechop_abi.summary.tsv" >> "$RUN_PH_SUM"
+  fi
+done
 
 # =========================
-# SELECT DOWNSTREAM INPUTS (for filtering + "trimmed" QC)
+# SELECT DOWNSTREAM INPUTS (for filtering + 'trimmed' QC)
 # =========================
 shopt -s nullglob
 declare -a SRC_FOR_FILTER_LIST TRIMMED_FOR_QC_LIST
 if [[ "$DOWNSTREAM_SET" == "porechop" ]]; then
   SRC_FOR_FILTER_LIST=( "$PORECHOP_DIR"/M*/M*.porechop.fastq.gz )
   TRIMMED_FOR_QC_LIST=( "${SRC_FOR_FILTER_LIST[@]}" )
-  echo "[INFO] DOWNSTREAM_SET=porechop → use porechop outputs."
+  echo "[INFO] DOWNSTREAM_SET=porechop → use per-phage porechop outputs."
 else
   SRC_FOR_FILTER_LIST=( "$PER_PHAGE_RAW"/M*.trimmed.fastq.gz )
   TRIMMED_FOR_QC_LIST=( "${SRC_FOR_FILTER_LIST[@]}" )
   echo "[INFO] DOWNSTREAM_SET=trimmed → use dorado-trimmed concatenations."
 fi
+
 if (( ${#SRC_FOR_FILTER_LIST[@]} == 0 )); then
   echo "[WARN] No inputs found for downstream in set: $DOWNSTREAM_SET"
 fi
+
 
 # =========================
 # STEP 4: (OPTIONAL) FILTER per-phage → per_phage_filtered
