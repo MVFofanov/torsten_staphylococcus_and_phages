@@ -21,6 +21,7 @@ PHAGES="${PHAGES:-M1 M2 M3 M4 M5}"
 # Assembly parameters
 THREADS="${SLURM_CPUS_PER_TASK:-95}"
 GENOME_SIZE="${GENOME_SIZE:-200k}"      # for Canu (e.g., 50k..500k for typical phages)
+CANU_COROUTCOVERAGE="${CANU_COROUTCOVERAGE:-80}"
 FLYE_READ_MODE="${FLYE_READ_MODE:---nano-raw}"  # --nano-raw or --nano-hq (use hq if you’re confident in Q20+ reads)
 FLYE_MIN_OVERLAP="${FLYE_MIN_OVERLAP:-2000}"
 FLYE_ASM_COV="${FLYE_ASM_COV:-100}"
@@ -120,7 +121,7 @@ for ph in $PHAGES; do
       echo "[RUN ] Flye → $outdir"
       mkdir -p "$outdir"
       activate_flye
-      flye $FLYE_READ_MODE "$fq" --out-dir "$outdir" --threads "$THREADS" --min-overlap "$FLYE_MIN_OVERLAP" --asm-coverage "$FLYE_ASM_COV" || {
+      flye $FLYE_READ_MODE "$fq" --out-dir "$outdir" --threads "$THREADS" --genome-size "$GENOME_SIZE" --min-overlap "$FLYE_MIN_OVERLAP" --asm-coverage "$FLYE_ASM_COV" || {
         echo "[WARN] Flye failed for $ph"; }
     fi
   else
@@ -141,6 +142,7 @@ for ph in $PHAGES; do
       "$CANU_BIN" \
         -p "$canu_prefix" -d "$outdir" \
         genomeSize="$GENOME_SIZE" \
+        corOutCoverage="$CANU_COROUTCOVERAGE" \
         useGrid=false \
         maxThreads="$THREADS" \
         -nanopore "$fq" || {
