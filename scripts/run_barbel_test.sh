@@ -17,7 +17,9 @@ echo "SLURM_JOB_ID=${SLURM_JOB_ID:-NA}"
 # -------------------------
 WD="${WD:-/work/zo49sog/crassvirales/torsten_staphylococcus_and_phages}"
 
-RAW_FASTQ="${RAW_FASTQ:-phages_analysis/ont_pipeline_20251009_134551/demux_trimmed/6b18c2cc-16b3-463f-9d76-d8db7ce6d962_SQK-NBD114-96_barcode01.fastq}"
+RAW_FASTQ="${WD}/phages_analysis/ont_pipeline_20251009_134551/demux_trimmed/6b18c2cc-16b3-463f-9d76-d8db7ce6d962_SQK-NBD114-96_barcode01.fastq"
+
+KIT="${KIT:-SQK-NBD114-96}"
 
 OUTROOT="${OUTROOT:-$WD/phages_analysis/ont_pipeline_20251009_134551}"
 OUTDIR="${OUTDIR:-$OUTROOT/barbell_v0.2.0_test}"
@@ -49,49 +51,51 @@ echo "[INFO] OUTDIR=$OUTDIR"
 echo "[INFO] THREADS=$THREADS"
 echo "[INFO] BARBELL=$BARBELL"
 
-# -------------------------
-# 1) ANNOTATE (with kit)
-# -------------------------
-# v0.1.8 supports --kit in 'annotate'.
-# Tip: if too few reads match, you can relax flanks a bit with: --flank-max-errors 5
-# (but always inspect afterwards). :contentReference[oaicite:1]{index=1}
-#  --kit SQK-NBD114-96 \
-"$BARBELL" annotate \
-  -i "$IN_FASTQ" \
-  -o "$OUTDIR/anno.tsv" \
-  -t "$THREADS"
+# # -------------------------
+# # 1) ANNOTATE (with kit)
+# # -------------------------
+# # v0.1.8 supports --kit in 'annotate'.
+# # Tip: if too few reads match, you can relax flanks a bit with: --flank-max-errors 5
+# # (but always inspect afterwards). :contentReference[oaicite:1]{index=1}
+# #  --kit SQK-NBD114-96 \
+# "$BARBELL" annotate \
+#   -i "$IN_FASTQ" \
+#   -o "$OUTDIR/anno.tsv" \
+#   -t "$THREADS"
 
-# -------------------------
-# 2) INSPECT (summaries + per-read pattern)
-# -------------------------
-"$BARBELL" inspect -i "$OUTDIR/anno.tsv" > "$OUTDIR/inspect_summary.txt"
-"$BARBELL" inspect -i "$OUTDIR/anno.tsv" -o "$OUTDIR/pattern_per_read.tsv"
+# # -------------------------
+# # 2) INSPECT (summaries + per-read pattern)
+# # -------------------------
+# "$BARBELL" inspect -i "$OUTDIR/anno.tsv" > "$OUTDIR/inspect_summary.txt"
+# "$BARBELL" inspect -i "$OUTDIR/anno.tsv" -o "$OUTDIR/pattern_per_read.tsv"
 
-# -------------------------
-# 3) FILTER (choose patterns and define cut positions)
-# -------------------------
-# Keep classic native-kit cases:
-#  • Left barcode only (cut after left tag) 
-#  • Left + right barcode (keep the insert: cut after left, before right)
-# Pattern & cut syntax documented in PDF. 
-cat > "$OUTDIR/filters.txt" <<'EOF'
-Ftag[fw, *, @left(0..250), >>]
-Ftag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]
-EOF
+# # -------------------------
+# # 3) FILTER (choose patterns and define cut positions)
+# # -------------------------
+# # Keep classic native-kit cases:
+# #  • Left barcode only (cut after left tag) 
+# #  • Left + right barcode (keep the insert: cut after left, before right)
+# # Pattern & cut syntax documented in PDF. 
+# cat > "$OUTDIR/filters.txt" <<'EOF'
+# Ftag[fw, *, @left(0..250), >>]
+# Ftag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]
+# EOF
 
-# Produce filtered.tsv with cuts column (required for trim). :contentReference[oaicite:3]{index=3}
-"$BARBELL" filter -i "$OUTDIR/anno.tsv" -f "$OUTDIR/filters.txt" -o "$OUTDIR/filtered.tsv"
+# # Produce filtered.tsv with cuts column (required for trim). :contentReference[oaicite:3]{index=3}
+# "$BARBELL" filter -i "$OUTDIR/anno.tsv" -f "$OUTDIR/filters.txt" -o "$OUTDIR/filtered.tsv"
 
-# -------------------------
-# 4) TRIM (write FASTQs)
-# -------------------------
-# Simplify filenames: keep only left label, ignore orientation → NB01.trimmed.fastq, etc. :contentReference[oaicite:4]{index=4}
-mkdir -p "$OUTDIR/trimmed"
-"$BARBELL" trim \
-  -i "$OUTDIR/filtered.tsv" \
-  -r "$IN_FASTQ" \
-  -o "$OUTDIR/trimmed" \
-  --no-orientation \
-  --only-side left
+# # -------------------------
+# # 4) TRIM (write FASTQs)
+# # -------------------------
+# # Simplify filenames: keep only left label, ignore orientation → NB01.trimmed.fastq, etc. :contentReference[oaicite:4]{index=4}
+# mkdir -p "$OUTDIR/trimmed"
+# "$BARBELL" trim \
+#   -i "$OUTDIR/filtered.tsv" \
+#   -r "$IN_FASTQ" \
+#   -o "$OUTDIR/trimmed" \
+#   --no-orientation \
+#   --only-side left
+
+"$BARBELL" kit -k "$KIT" -i "$RAW_FASTQ" -o "$OUTDIR" --maximize
 
 echo "Finished: $(date)"
