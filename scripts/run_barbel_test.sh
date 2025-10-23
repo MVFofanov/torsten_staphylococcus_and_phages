@@ -13,61 +13,85 @@ echo "Started: $(date)"
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-NA}"
 
 # -------------------------
-# USER CONFIG (yours)
+# USER CONFIG
 # -------------------------
 WD="${WD:-/work/zo49sog/crassvirales/torsten_staphylococcus_and_phages}"
 
-# Can be relative to WD (as you provided) or absolute:
 RAW_FASTQ="${RAW_FASTQ:-phages_analysis/ont_pipeline_20251009_134551/demux_trimmed/6b18c2cc-16b3-463f-9d76-d8db7ce6d962_SQK-NBD114-96_barcode01.fastq}"
 
 OUTROOT="${OUTROOT:-$WD/phages_analysis/ont_pipeline_20251009_134551}"
-OUT_BARBELL="${OUT_BARBELL:-$OUTROOT/barbell_test}"
+OUTDIR="${OUTDIR:-$OUTROOT/barbell_v0.2.0_test}"
 
-KIT="${KIT:-SQK-NBD114-96}"
-
-# Threads (use all cores unless overridden)
 THREADS="${SLURM_CPUS_PER_TASK:-80}"
 
-# -------------------------
-# barbell binary on cluster
-# -------------------------
-export CARGO_HOME=/home/groups/VEO/tools/cargo
-export RUSTUP_HOME=/home/groups/VEO/tools/rust
-#BARBELL=/home/groups/VEO/tools/barbell/v0.1.9/barbell/target/release/barbell
-BARBELL="/home/groups/VEO/tools/barbell/v0.1.8/barbell/target/release/barbell"
+# v0.1.8 binary (no 'kit' subcommand)
+# export CARGO_HOME=/home/groups/VEO/tools/cargo
+# export RUSTUP_HOME=/home/groups/VEO/tools/rust
+# BARBELL="/home/groups/VEO/tools/barbell/v0.1.8/barbell/target/release/barbell"
+
+export CARGO_HOME=/home/zo49sog/miniconda3/envs/barbell_rust_env/.cargo
+export RUSTUP_HOME=/home/zo49sog/miniconda3/envs/barbell_rust_env/.rustup
+BARBELL="/work/zo49sog/barbell/target/release/barbell"
+
 # -------------------------
 # Resolve paths & prep I/O
 # -------------------------
-# Make RAW_FASTQ absolute if user passed it relative to WD
 if [[ "$RAW_FASTQ" = /* ]]; then
   IN_FASTQ="$RAW_FASTQ"
 else
   IN_FASTQ="$WD/$RAW_FASTQ"
 fi
 
-mkdir -p "$OUT_BARBELL"
+mkdir -p "$OUTDIR"
 
-echo "[INFO] WD=$WD"
 echo "[INFO] IN_FASTQ=$IN_FASTQ"
-echo "[INFO] OUT_BARBELL=$OUT_BARBELL"
-echo "[INFO] KIT=$KIT"
+echo "[INFO] OUTDIR=$OUTDIR"
 echo "[INFO] THREADS=$THREADS"
 echo "[INFO] BARBELL=$BARBELL"
 
 # -------------------------
-# Run barbell (kit preset)
+# 1) ANNOTATE (with kit)
 # -------------------------
-# --maximize: favor yield; add/remove flags below as you prefer
-# Other handy flags (optional):
-#   --no-orientation         # keep original read orientation
-#   --min-length 1000        # drop very short fragments
-#   --only-side left         # trim only left side
-#   --verbose                # more logging
-"$BARBELL" kit \
-  -k "$KIT" \
+# v0.1.8 supports --kit in 'annotate'.
+# Tip: if too few reads match, you can relax flanks a bit with: --flank-max-errors 5
+# (but always inspect afterwards). :contentReference[oaicite:1]{index=1}
+#  --kit SQK-NBD114-96 \
+"$BARBELL" annotate \
   -i "$IN_FASTQ" \
-  -o "$OUT_BARBELL" \
-  --maximize \
+  -o "$OUTDIR/anno.tsv" \
   -t "$THREADS"
+
+# -------------------------
+# 2) INSPECT (summaries + per-read pattern)
+# -------------------------
+"$BARBELL" inspect -i "$OUTDIR/anno.tsv" > "$OUTDIR/inspect_summary.txt"
+"$BARBELL" inspect -i "$OUTDIR/anno.tsv" -o "$OUTDIR/pattern_per_read.tsv"
+
+# -------------------------
+# 3) FILTER (choose patterns and define cut positions)
+# -------------------------
+# Keep classic native-kit cases:
+#  • Left barcode only (cut after left tag) 
+#  • Left + right barcode (keep the insert: cut after left, before right)
+# Pattern & cut syntax documented in PDF. 
+cat > "$OUTDIR/filters.txt" <<'EOF'
+Ftag[fw, *, @left(0..250), >>]
+Ftag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]
+EOF
+
+# Produce filtered.tsv with cuts column (required for trim). :contentReference[oaicite:3]{index=3}
+"$BARBELL" filter -i "$OUTDIR/anno.tsv" -f "$OUTDIR/filters.txt" -o "$OUTDIR/filtered.tsv"
+
+# -------------------------
+# 4) TRIM (write FASTQs)
+# -------------------------
+# Simplify filenames: keep only left label, ignore orientation → NB01.trimmed.fastq, etc. :contentReference[oaicite:4]{index=4}
+mkdir -p "$OUTDIR/trimmed"
+"$BARBELL" trim \
+  -i "$OUTDIR/filtered.tsv" \
+  -r "$IN_FASTQ" \
+  -o "$OUTDIR/trimmed" \
+  --no-orientation \
+  --only-side left
 
 echo "Finished: $(date)"
